@@ -1,11 +1,7 @@
-use crate::{
-    error::DaggerError,
-    llm::unified::{
-        Block::{self, Thinking},
-        Message, Role, StopReason, ToolDef, UnifiedRequest, UnifiedResponse, Usage,
-    },
+use crate::error::{DaggerError, Result};
+use crate::llm::unified::{
+    Block, Message, Role, StopReason, ToolDef, UnifiedRequest, UnifiedResponse, Usage,
 };
-use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,12 +33,22 @@ pub struct ChatRequest {
     stream: bool,
 }
 
-/// 响应
+/// 正确响应
 #[derive(Debug, Deserialize)]
 pub struct ChatResponse {
     choices: Vec<ChatChoice>,
     #[serde(default)]
     usage: Option<ChatUsage>,
+}
+
+/// 错误响应
+#[derive(Debug, Deserialize)]
+struct ChatErrorBody {
+    error: ChatErrorDetail,
+}
+#[derive(Debug, Deserialize)]
+struct ChatErrorDetail {
+    message: String,
 }
 
 /// Chat Completion协议下 消息模型
@@ -126,7 +132,7 @@ fn default_tool_type() -> String {
 /// message转换
 /// 该方法用户将 统一消息模型 转换为 OpenAI Chat 协议消息模型
 /// 一般用在业务处理后，需要使用OpenAI Chat向模型发起请求
-fn to_chat_message(system: &Option<String>, messages: &[Message]) -> Vec<ChatMessage> {
+fn to_chat_messages(system: &Option<String>, messages: &[Message]) -> Vec<ChatMessage> {
     let mut out = Vec::new();
 
     // completions 协议系统提示词位于 message数组第一条
@@ -215,7 +221,7 @@ fn to_chat_message(system: &Option<String>, messages: &[Message]) -> Vec<ChatMes
 }
 
 /// 通用模型-工具 ——> OpenAI Chat 工具
-fn to_chat_call(tools: &[ToolDef]) -> Vec<ChatToolDef> {
+fn to_chat_tool(tools: &[ToolDef]) -> Vec<ChatToolDef> {
     tools
         .iter()
         .map(|t| ChatToolDef {
@@ -303,15 +309,52 @@ pub struct OpenAIChatClient {
 }
 
 impl OpenAIChatClient {
-    pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> OpenAIChatClient {
+    pub fn new(api_key: impl Into<String>, base_url: Option<String>) -> Self {
         OpenAIChatClient {
             http: reqwest::Client::new(),
             api_key: api_key.into(),
-            base_url: base_url.into(),
+            base_url: base_url
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+                .trim_end_matches("/")
+                .to_string(),
         }
     }
 
-    pub async fn complete(req: &UnifiedRequest) -> Result<UnifiedResponse> {
-        todo!("")
+    pub async fn complete(&self, req: &UnifiedRequest) -> Result<UnifiedResponse> {
+        let body = ChatRequest {
+            model: req.model.clone(),
+            messages: to_chat_messages(&req.system, &req.messages),
+            tools: to_chat_tool(&req.tools),
+            tool_choice: if req.tools.is_empty() {
+                None
+            } else {
+                Some("auto".into())
+            },
+            max_tokens: Some(req.max_tokens),
+            temperature: req.temperature,
+            stream: false,
+        };
+        let resp = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<ChatErrorBody>(&text)
+                .map(|e| e.error.message)
+                .unwrap_or(text);
+            return Err(DaggerError::Api {
+                status: status.as_u16(),
+                message,
+            });
+        }
+
+        let chat_resp: ChatResponse = resp.json().await?;
+        from_chat_response(chat_resp)
     }
 }
