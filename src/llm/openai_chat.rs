@@ -6,10 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// =======================================
-// OpenAI Chat Reponse标准协议  已OpenAI官方文档为准
-// =======================================
-/// 请求
+/// OpenAI Chat 协议 请求结构体
 #[derive(Debug, Serialize)]
 pub struct ChatRequest {
     // 模型名称

@@ -40,7 +40,7 @@ pub struct Message {
     pub content: Vec<Block>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
@@ -131,7 +131,7 @@ impl Message {
     // 提取消息里面的全部工具调用
     // 该方法一般用于处理模型响应
     // 该方法返回元组(id, 方法名称，方法参数)
-    pub fn tool_use(&self) -> Vec<(&str, &str, &Value)> {
+    pub fn tool_uses(&self) -> Vec<(&str, &str, &Value)> {
         self.content
             .iter()
             .filter_map(|m| match m {
