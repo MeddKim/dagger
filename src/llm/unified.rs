@@ -20,6 +20,7 @@ pub struct UnifiedRequest {
     pub thinking: bool,
 }
 /// 统一响应模型
+#[derive(Debug, Clone)]
 pub struct UnifiedResponse {
     /// LLM返回的消息集
     pub message: Message,
@@ -109,6 +110,27 @@ pub struct Usage {
     /// 写入缓存的输入token
     pub cache_write_tokens: u64,
 }
+
+/// 通用的流式帧对象
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// 文本增量（模型正在进行文本输出）
+    TextDelta(String),
+    /// 思考内容增量
+    ThinkingDelta(String),
+    /// 一个工具调用的开始：id和工具名已确定，参数还待后续到达
+    ToolUseStart { id: String, name: String },
+    /// 工具参数的 JSON 文本增量碎片
+    ToolUseInputDelta { id: String, delta: String },
+    /// 一个工具调用的参数已全部到达
+    ToolUseEnd { id: String },
+    /// 流正常结束，附带聚合好的完整响应
+    Done(Box<UnifiedResponse>),
+}
+
+/// 流式补全的返回类型
+pub type EventStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = crate::error::Result<StreamEvent>> + Send>>;
 
 //-----------------------------------
 // 模型方法

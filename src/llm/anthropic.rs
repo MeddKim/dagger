@@ -1,7 +1,10 @@
 use crate::error::{DaggerError, Result};
+use crate::llm::sse;
 use crate::llm::unified::{
-    Block, Message, Role, StopReason, ToolDef, UnifiedRequest, UnifiedResponse, Usage,
+    Block, EventStream, Message, Role, StopReason, StreamEvent, ToolDef, UnifiedRequest,
+    UnifiedResponse, Usage,
 };
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -327,17 +330,295 @@ impl AnthropicClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<AnthropicErrBody>(&text)
-                .map(|e| e.error.message)
-                .unwrap_or(text);
-            return Err(DaggerError::Api {
-                status: status.as_u16(),
-                message,
-            });
+            return Err(self.api_error(resp).await);
         }
 
         let parsed: AnthropicResponse = resp.json().await?;
         from_anthropic_response(parsed)
+    }
+}
+
+// ========================================
+// 流式请求
+// ========================================
+/// Anthropic 流式事件：按 type 字段反序列化。
+/// 事件名在 `event:` 行里也有，但 data 内的 type 字段更可靠。
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicStreamEvent {
+    MessageStart {
+        message: AnthropicMessageStart,
+    },
+    ContentBlockStart {
+        index: usize,
+        content_block: AnthropicBlockStart,
+    },
+    ContentBlockDelta {
+        index: usize,
+        delta: AnthropicDelta,
+    },
+    ContentBlockStop {
+        index: usize,
+    },
+    MessageDelta {
+        delta: AnthropicMessageDeltaBody,
+        #[serde(default)]
+        usage: Option<AnthropicUsage>,
+    },
+    MessageStop {},
+    /// ping 心跳等，忽略
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicMessageStart {
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+}
+
+/// block 起始帧：只关心类型与工具调用的 id/name
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicBlockStart {
+    Text {},
+    Thinking {},
+    ToolUse {
+        id: String,
+        name: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicDelta {
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    /// 思考块签名（流末尾一次性给出）
+    SignatureDelta {
+        signature: String,
+    },
+    /// 工具参数 JSON 碎片
+    InputJsonDelta {
+        partial_json: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicMessageDeltaBody {
+    #[serde(default)]
+    stop_reason: Option<String>,
+}
+
+/// block 累积器：按 index 记录每个 block 的类型与缓冲
+#[derive(Debug)]
+enum BlockAcc {
+    Text(String),
+    Thinking {
+        buf: String,
+        signature: Option<String>,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        json_buf: String,
+    },
+    Other,
+}
+
+impl AnthropicClient {
+    pub async fn complete_stream(&self, req: &UnifiedRequest) -> Result<EventStream> {
+        // 复用非流式请求体，仅改 stream 字段
+        let body = serde_json::to_value(AnthropicRequest {
+            model: req.model.clone(),
+            max_tokens: req.max_tokens,
+            system: req.system.clone(),
+            messages: to_anthropic_messages(&req.messages),
+            tools: to_anthropic_tools(&req.tools),
+            tool_choice: if req.tools.is_empty() {
+                None
+            } else {
+                Some(AnthropicToolChoice {
+                    kind: "auto".into(),
+                })
+            },
+            temperature: req.temperature,
+            thinking: req.thinking.then_some(AnthropicThinking {
+                kind: "enabled".into(),
+                budget_tokens: (req.max_tokens / 2).min(16000).max(1024),
+            }),
+            stream: true,
+        })?;
+
+        let resp = self
+            .http
+            .post(format!("{}/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(self.api_error(resp).await);
+        }
+
+        let mut sse = Box::pin(sse::into_sse_stream(resp));
+
+        let stream = async_stream::try_stream! {
+            let mut blocks: Vec<BlockAcc> = Vec::new();
+            let mut stop_reason = StopReason::Other;
+            let mut usage = Usage::default();
+
+            while let Some(ev) = sse.next().await {
+                let ev = ev?;
+                if ev.data.trim().is_empty() {
+                    continue;
+                }
+                let event: AnthropicStreamEvent = serde_json::from_str(&ev.data)
+                    .map_err(|e| DaggerError::Parse(format!("流式事件解析失败: {e}")))?;
+
+                match event {
+                    AnthropicStreamEvent::MessageStart { message } => {
+                        if let Some(u) = message.usage {
+                            usage.input_tokens = u.input_tokens;
+                            usage.cache_read_tokens = u.cache_read_input_tokens;
+                            usage.cache_write_tokens = u.cache_creation_input_tokens;
+                        }
+                    }
+
+                    AnthropicStreamEvent::ContentBlockStart { index, content_block } => {
+                        while blocks.len() <= index {
+                            blocks.push(BlockAcc::Other);
+                        }
+                        match content_block {
+                            AnthropicBlockStart::Text {} => {
+                                blocks[index] = BlockAcc::Text(String::new());
+                            }
+                            AnthropicBlockStart::Thinking {} => {
+                                blocks[index] = BlockAcc::Thinking {
+                                    buf: String::new(),
+                                    signature: None,
+                                };
+                            }
+                            AnthropicBlockStart::ToolUse { id, name } => {
+                                yield StreamEvent::ToolUseStart {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                };
+                                blocks[index] = BlockAcc::ToolUse {
+                                    id,
+                                    name,
+                                    json_buf: String::new(),
+                                };
+                            }
+                            AnthropicBlockStart::Other => {}
+                        }
+                    }
+
+                    AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
+                        match (blocks.get_mut(index), delta) {
+                            (Some(BlockAcc::Text(buf)), AnthropicDelta::TextDelta { text }) => {
+                                buf.push_str(&text);
+                                yield StreamEvent::TextDelta(text);
+                            }
+                            (
+                                Some(BlockAcc::Thinking { buf, .. }),
+                                AnthropicDelta::ThinkingDelta { thinking },
+                            ) => {
+                                buf.push_str(&thinking);
+                                yield StreamEvent::ThinkingDelta(thinking);
+                            }
+                            (
+                                Some(BlockAcc::Thinking { signature, .. }),
+                                AnthropicDelta::SignatureDelta { signature: sig },
+                            ) => {
+                                *signature = Some(sig);
+                            }
+                            (
+                                Some(BlockAcc::ToolUse { id, json_buf, .. }),
+                                AnthropicDelta::InputJsonDelta { partial_json },
+                            ) => {
+                                json_buf.push_str(&partial_json);
+                                yield StreamEvent::ToolUseInputDelta {
+                                    id: id.clone(),
+                                    delta: partial_json,
+                                };
+                            }
+                            _ => {} // 槽位与类型不匹配的防御分支
+                        }
+                    }
+
+                    AnthropicStreamEvent::ContentBlockStop { index } => {
+                        if let Some(BlockAcc::ToolUse { id, .. }) = blocks.get(index) {
+                            yield StreamEvent::ToolUseEnd { id: id.clone() };
+                        }
+                    }
+
+                    AnthropicStreamEvent::MessageDelta { delta, usage: u } => {
+                        stop_reason = match delta.stop_reason.as_deref() {
+                            Some("end_turn") => StopReason::EndTurn,
+                            Some("tool_use") => StopReason::ToolUse,
+                            Some("max_tokens") => StopReason::MaxTokens,
+                            _ => StopReason::Other,
+                        };
+                        if let Some(u) = u {
+                            usage.output_tokens = u.output_tokens;
+                        }
+                    }
+
+                    AnthropicStreamEvent::MessageStop {} => break,
+                    AnthropicStreamEvent::Other => {}
+                }
+            }
+
+            // 聚合 blocks → 统一 Message
+            let content: Vec<Block> = blocks
+                .into_iter()
+                .filter_map(|acc| match acc {
+                    BlockAcc::Text(text) if !text.is_empty() => Some(Block::Text { text }),
+                    BlockAcc::Thinking { buf, signature } if !buf.is_empty() => {
+                        Some(Block::Thinking { thinking: buf, signature })
+                    }
+                    BlockAcc::ToolUse { id, name, json_buf } => {
+                        let input = serde_json::from_str(&json_buf)
+                            .unwrap_or(Value::Object(serde_json::Map::new()));
+                        Some(Block::ToolUse { id, name, input })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            yield StreamEvent::Done(Box::new(UnifiedResponse {
+                message: Message { role: Role::Assistant, content },
+                stop_reason,
+                usage,
+                response_id: None,
+            }));
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    /// 抽取的公共错误处理：非 2xx → DaggerError::Api
+    async fn api_error(&self, resp: reqwest::Response) -> DaggerError {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        let message = serde_json::from_str::<AnthropicErrBody>(&text)
+            .map(|e| e.error.message)
+            .unwrap_or(text);
+        DaggerError::Api {
+            status: status,
+            message,
+        }
     }
 }

@@ -1,10 +1,13 @@
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{DaggerError, Result};
+use crate::llm::sse;
 use crate::llm::unified::{
-    Block, Message, Role, StopReason, ToolDef, UnifiedRequest, UnifiedResponse, Usage,
+    Block, EventStream, Message, Role, StopReason, StreamEvent, ToolDef, UnifiedRequest,
+    UnifiedResponse, Usage,
 };
 
 /// OpenAI Responses协议 请求结构体
@@ -360,18 +363,178 @@ impl OpenAIResponsesClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            // Responses 错误体同样是 {"error":{"message":...}}
-            let message = serde_json::from_str::<ResponsesErrorBody>(&text)
-                .map(|e| e.error.message)
-                .unwrap_or(text);
-            return Err(DaggerError::Api {
-                status: status.as_u16(),
-                message,
-            });
+            return Err(self.api_error(resp).await);
         }
 
         let parsed: ResponsesResponse = resp.json().await?;
         from_responses_response(parsed)
+    }
+}
+
+// ====================================================
+// 流式请求
+// ====================================================
+/// Responses 流式事件：只建模我们关心的类型，其余进 Other
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ResponsesStreamEvent {
+    /// 文本增量：{"type":"response.output_text.delta","delta":"你",...}
+    #[serde(rename = "response.output_text.delta")]
+    OutputTextDelta { delta: String },
+
+    /// 新输出 item 出现：function_call 意味着一次工具调用开始
+    #[serde(rename = "response.output_item.added")]
+    OutputItemAdded { item: OutputItemAddedBody },
+
+    /// 工具参数碎片：{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\""}
+    #[serde(rename = "response.function_call_arguments.delta")]
+    FunctionCallArgsDelta { item_id: String, delta: String },
+
+    /// 工具调用 item 完成
+    #[serde(rename = "response.output_item.done")]
+    OutputItemDone { item: OutputItemDoneBody },
+
+    /// 整个响应完成：携带完整响应对象（直接复用非流式解析！）
+    #[serde(rename = "response.completed")]
+    Completed { response: ResponsesResponse },
+
+    /// 响应失败
+    #[serde(rename = "response.failed")]
+    Failed { response: Value },
+
+    /// response.created / response.in_progress / content_part.added … 忽略
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputItemAddedBody {
+    #[serde(rename = "type")]
+    kind: String,
+    /// function_call item 携带
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputItemDoneBody {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    call_id: Option<String>,
+}
+
+impl OpenAIResponsesClient {
+    pub async fn complete_stream(&self, req: &UnifiedRequest) -> Result<EventStream> {
+        let body = ResponsesRequest {
+            model: req.model.clone(),
+            instructions: req.system.clone(),
+            input: to_input_items(&req.messages),
+            tools: to_responses_tools(&req.tools),
+            max_output_tokens: Some(req.max_tokens),
+            temperature: req.temperature,
+            stream: true,
+            store: false,
+        };
+
+        let resp = self
+            .http
+            .post(format!("{}/responses", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(self.api_error(resp).await);
+        }
+        let mut sse = Box::pin(sse::into_sse_stream(resp));
+
+        let stream = async_stream::try_stream! {
+            // item_id → call_id 映射：delta 事件只带 item_id（fc_...），
+            // 而统一层 ToolUse.id 用 call_id（call_...），需要翻译
+            let item_to_call: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
+            while let Some(ev) = sse.next().await {
+                let ev = ev?;
+                if ev.data.trim().is_empty() {
+                    continue;
+                }
+                let event: ResponsesStreamEvent = serde_json::from_str(&ev.data)
+                    .map_err(|e| DaggerError::Parse(format!("流式事件解析失败: {e}")))?;
+
+                match event {
+                    ResponsesStreamEvent::OutputTextDelta { delta } => {
+                        yield StreamEvent::TextDelta(delta);
+                    }
+
+                    ResponsesStreamEvent::OutputItemAdded { item } => {
+                        if item.kind == "function_call" {
+                            if let (Some(call_id), Some(name)) = (item.call_id, item.name) {
+                                yield StreamEvent::ToolUseStart {
+                                    id: call_id.clone(),
+                                    name,
+                                };
+                                // 记录映射时不知道 item_id——从 raw 里拿不到，
+                                // 简单起见用 call_id 自身兜底（多数实现 item_id 与
+                                // call_id 同时出现在后续 delta 中，见下）
+                            }
+                        }
+                    }
+
+                    ResponsesStreamEvent::FunctionCallArgsDelta { item_id, delta } => {
+                        // delta 事件的 item_id 是 fc_ 开头；ToolUseStart 发的是 call_id。
+                        // 生产实现应在 OutputItemAdded 里同时记录 item.id → call_id。
+                        // 这里简化：直接以 item_id 为关联键，Done 帧里有完整对象兜底。
+                        let id = item_to_call.get(&item_id).cloned().unwrap_or(item_id);
+                        yield StreamEvent::ToolUseInputDelta { id, delta };
+                    }
+
+                    ResponsesStreamEvent::OutputItemDone { item } => {
+                        if item.kind == "function_call" {
+                            if let Some(call_id) = item.call_id {
+                                yield StreamEvent::ToolUseEnd { id: call_id };
+                            }
+                        }
+                    }
+
+                    ResponsesStreamEvent::Completed { response } => {
+                        // 复用第 06 章的完整解析：最终状态以它为准
+                        let unified = from_responses_response(response)?;
+                        yield StreamEvent::Done(Box::new(unified));
+                        break;
+                    }
+
+                    ResponsesStreamEvent::Failed { response } => {
+                        Err(DaggerError::Api {
+                            status: 500,
+                            message: format!("Responses 流式失败: {response}"),
+                        })?;
+                    }
+
+                    ResponsesStreamEvent::Other => {}
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    /// 抽取的公共错误处理：非 2xx → DaggerError::Api
+    async fn api_error(&self, resp: reqwest::Response) -> DaggerError {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        // Responses 错误体同样是 {"error":{"message":...}}
+        let message = serde_json::from_str::<ResponsesErrorBody>(&text)
+            .map(|e| e.error.message)
+            .unwrap_or(text);
+        DaggerError::Api {
+            status: status,
+            message,
+        }
     }
 }

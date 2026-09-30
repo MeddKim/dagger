@@ -1,10 +1,14 @@
 use crate::error::{DaggerError, Result};
+use crate::llm::sse;
 use crate::llm::unified::{
-    Block, Message, Role, StopReason, ToolDef, UnifiedRequest, UnifiedResponse, Usage,
+    Block, EventStream, Message, Role, StopReason, StreamEvent, ToolDef, UnifiedRequest,
+    UnifiedResponse, Usage,
 };
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::json;
 
 /// OpenAI Chat 协议 请求结构体
 #[derive(Debug, Serialize)]
@@ -218,7 +222,7 @@ fn to_chat_messages(system: &Option<String>, messages: &[Message]) -> Vec<ChatMe
 }
 
 /// 通用模型-工具 ——> OpenAI Chat 工具
-fn to_chat_tool(tools: &[ToolDef]) -> Vec<ChatToolDef> {
+fn to_chat_tools(tools: &[ToolDef]) -> Vec<ChatToolDef> {
     tools
         .iter()
         .map(|t| ChatToolDef {
@@ -321,7 +325,7 @@ impl OpenAIChatClient {
         let body = ChatRequest {
             model: req.model.clone(),
             messages: to_chat_messages(&req.system, &req.messages),
-            tools: to_chat_tool(&req.tools),
+            tools: to_chat_tools(&req.tools),
             tool_choice: if req.tools.is_empty() {
                 None
             } else {
@@ -341,17 +345,245 @@ impl OpenAIChatClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<ChatErrorBody>(&text)
-                .map(|e| e.error.message)
-                .unwrap_or(text);
-            return Err(DaggerError::Api {
-                status: status.as_u16(),
-                message,
-            });
+            return Err(self.api_error(resp).await);
         }
 
         let chat_resp: ChatResponse = resp.json().await?;
         from_chat_response(chat_resp)
+    }
+}
+
+// ===============================================
+// 流式请求
+// ===============================================
+#[derive(Debug, Deserialize)]
+struct ChatStreamChunk {
+    #[serde(default)]
+    choices: Vec<ChatStreamChoice>,
+    /// 仅当请求带 stream_options.include_usage 时，倒数第二帧携带
+    #[serde(default)]
+    usage: Option<ChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamChoice {
+    delta: ChatStreamDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ChatStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    /// DeepSeek 等厂商的推理流
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<ChatStreamToolCall>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamToolCall {
+    /// 并行工具调用的槽位编号：同一 index 的碎片属于同一次调用
+    index: usize,
+    /// 仅首个碎片携带
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<ChatStreamFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+/// 工具调用的增量装配状态：同一 index 的碎片不断 append
+#[derive(Default)]
+struct ToolCallDelta {
+    id: String,
+    name: String,
+    arguments: String,
+    /// 是否已向上游发出 ToolUseStart（避免重复发）
+    started: bool,
+}
+impl OpenAIChatClient {
+    /// 流式补全：返回统一的 StreamEvent 流。
+    ///
+    /// 协议要点：
+    /// - 每帧只带增量（delta），文本/思考/工具参数各自累积；
+    /// - 工具调用按 index 槽位装配，支持并行多调用；
+    /// - 最后一帧数据是 "[DONE]" 哨兵，不是 JSON；
+    /// - stream_options.include_usage 该入参会让返回的倒数第二帧携带usage信息
+    pub async fn complete_stream(&self, req: &UnifiedRequest) -> Result<EventStream> {
+        // 复用非流式的请求构造，再覆盖两个流式字段
+        let mut body = serde_json::to_value(ChatRequest {
+            model: req.model.clone(),
+            messages: to_chat_messages(&req.system, &req.messages),
+            tools: to_chat_tools(&req.tools),
+            tool_choice: if req.tools.is_empty() {
+                None
+            } else {
+                Some("auto".to_string())
+            },
+            max_tokens: Some(req.max_tokens),
+            temperature: req.temperature,
+            stream: true,
+        })?;
+
+        // OpenAI官方协议要求的入参，
+        // Deepseek等三方厂商并不需要该参数，会直接返回usage，且属性有差异
+        body["stream_options"] = json!({"include_usage": true});
+
+        let resp = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(self.api_error(resp).await);
+        }
+
+        let mut sse = Box::pin(sse::into_sse_stream(resp));
+
+        let stream = async_stream::try_stream! {
+            // ── 累积状态 ──
+            let mut text_buf = String::new();
+            let mut thinking_buf = String::new();
+            let mut tools: Vec<ToolCallDelta> = Vec::new();
+            let mut stop_reason = StopReason::Other;
+            let mut usage = Usage::default();
+
+            // 异步处理每一帧的数据
+            while let Some(ev) = sse.next().await {
+                let ev = ev?;
+                let data = ev.data.trim();
+
+                // 返回 data:[DONE] 即输出结束
+                if data == "[DONE]" {
+                    break;
+                }
+
+                let chunk: ChatStreamChunk = serde_json::from_str(data)
+                    .map_err(|e| DaggerError::Parse(format!("流式 chunk 解析失败: {e}; 原文: {data}")))?;
+
+                if let Some(u) = chunk.usage {
+                    usage = Usage {
+                        input_tokens: u.prompt_tokens,
+                        output_tokens: u.completion_tokens,
+                        ..Default::default()
+                    };
+                }
+
+                let Some(choice) = chunk.choices.into_iter().next() else { continue };
+
+                // ① 文本增量
+                if let Some(t) = choice.delta.content {
+                    if !t.is_empty() {
+                        text_buf.push_str(&t);
+                        yield StreamEvent::TextDelta(t);
+                    }
+                }
+                // ② 思考增量（厂商扩展）
+                if let Some(t) = choice.delta.reasoning_content {
+                    if !t.is_empty() {
+                        thinking_buf.push_str(&t);
+                        yield StreamEvent::ThinkingDelta(t);
+                    }
+                }
+                // ③ 工具调用增量：按 index 槽位装配
+                for tc in choice.delta.tool_calls {
+                    while tools.len() <= tc.index {
+                        tools.push(ToolCallDelta::default());
+                    }
+                    let delta = &mut tools[tc.index];
+
+                    let mut just_started = false;
+                    if let Some(id) = tc.id {
+                        delta.id = id;
+                    }
+                    if let Some(f) = tc.function {
+                        if let Some(name) = f.name {
+                            delta.name = name;
+                        }
+                        if let Some(args) = f.arguments {
+                            delta.arguments.push_str(&args);
+                            if delta.started {
+                                yield StreamEvent::ToolUseInputDelta {
+                                    id: delta.id.clone(),
+                                    delta: args,
+                                };
+                            }
+                        }
+                    }
+                    // id 和 name 完整后 → 发出 ToolUseStart（一次）
+                    if !delta.started && !delta.id.is_empty() && !delta.name.is_empty() {
+                        delta.started = true;
+                        just_started = true;
+                        yield StreamEvent::ToolUseStart {
+                            id: delta.id.clone(),
+                            name: delta.name.clone(),
+                        };
+                    }
+                    // 起始帧往往同时携带 arguments 开头碎片，补发
+                    if just_started && !delta.arguments.is_empty() {
+                        yield StreamEvent::ToolUseInputDelta {
+                            id: delta.id.clone(),
+                            delta: delta.arguments.clone(),
+                        };
+                    }
+                }
+
+                if let Some(fr) = choice.finish_reason {
+                    stop_reason = match fr.as_str() {
+                        "stop" => StopReason::EndTurn,
+                        "tool_calls" => StopReason::ToolUse,
+                        "length" => StopReason::MaxTokens,
+                        _ => StopReason::Other,
+                    };
+                }
+            }
+
+            // ── 聚合为完整响应，交出 Done ──
+            let mut blocks: Vec<Block> = Vec::new();
+            if !thinking_buf.is_empty() {
+                blocks.push(Block::Thinking { thinking: thinking_buf, signature: None });
+            }
+            if !text_buf.is_empty() {
+                blocks.push(Block::Text { text: text_buf });
+            }
+            for delta in tools {
+                yield StreamEvent::ToolUseEnd { id: delta.id.clone() };
+                let input = serde_json::from_str(&delta.arguments)
+                    .unwrap_or(Value::Object(serde_json::Map::new()));
+                blocks.push(Block::ToolUse { id: delta.id, name: delta.name, input });
+            }
+
+            yield StreamEvent::Done(Box::new(UnifiedResponse {
+                message: Message { role: Role::Assistant, content: blocks },
+                stop_reason,
+                usage,
+                response_id: None,
+            }));
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    /// 抽取的公共错误处理：非 2xx → DaggerError::Api
+    async fn api_error(&self, resp: reqwest::Response) -> DaggerError {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        let message = serde_json::from_str::<ChatErrorBody>(&text)
+            .map(|e| e.error.message)
+            .unwrap_or(text);
+        DaggerError::Api { status, message }
     }
 }
