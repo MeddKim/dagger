@@ -352,6 +352,11 @@ impl OpenAIResponsesClient {
             stream: false,
             store: false, //自管历史，关闭服务端存储
         };
+        tracing::debug!(baseUrl = self.base_url, "【OpenAIResponses】发起模型请求。");
+        tracing::debug!(
+            request = serde_json::to_string(&body).unwrap_or_else(|e| format!("<序列化失败: {e}>")),
+            "【OpenAIResponses】发起模型请求。"
+        );
 
         let resp = self
             .http

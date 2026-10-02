@@ -319,6 +319,13 @@ impl AnthropicClient {
             }),
             stream: false,
         };
+
+        tracing::debug!(baseUrl = self.base_url, "【Anthropic】发起模型请求。");
+        tracing::debug!(
+            request = serde_json::to_string(&body).unwrap_or_else(|e| format!("<序列化失败: {e}>")),
+            "【Anthropic】发起模型请求。"
+        );
+
         let resp = self
             .http
             .post(format!("{}/messages", self.base_url))
@@ -332,8 +339,9 @@ impl AnthropicClient {
         if !status.is_success() {
             return Err(self.api_error(resp).await);
         }
-
         let parsed: AnthropicResponse = resp.json().await?;
+        tracing::debug!("【Anthropic】模型响应{:?}。", parsed);
+
         from_anthropic_response(parsed)
     }
 }

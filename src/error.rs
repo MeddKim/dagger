@@ -18,6 +18,13 @@ pub enum DaggerError {
 
     #[error("JSON 序列化/反序列化错误：{0}")]
     Json(#[from] serde_json::Error),
+
+    // 模型响应解析失败（协议变更，非预期字段等）
+    #[error("配置异常：{0}")]
+    Config(String),
+
+    #[error("超过最大步数")]
+    MaxStepsExceeded(usize),
 }
 
 pub type Result<T> = std::result::Result<T, DaggerError>;

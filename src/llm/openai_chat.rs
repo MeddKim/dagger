@@ -335,6 +335,11 @@ impl OpenAIChatClient {
             temperature: req.temperature,
             stream: false,
         };
+        tracing::debug!(baseUrl = self.base_url, "【OpenAIChat】发起模型请求。");
+        tracing::debug!(
+            request = serde_json::to_string(&body).unwrap_or_else(|e| format!("<序列化失败: {e}>")),
+            "【OpenAIChat】发起模型请求。"
+        );
         let resp = self
             .http
             .post(format!("{}/chat/completions", self.base_url))
@@ -349,6 +354,7 @@ impl OpenAIChatClient {
         }
 
         let chat_resp: ChatResponse = resp.json().await?;
+        tracing::debug!("【OpenAIChat】模型响应。response={:?}", chat_resp);
         from_chat_response(chat_resp)
     }
 }
