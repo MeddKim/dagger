@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use crate::{agent, provider, tools};
+use crate::{agent, provider, tools, ui};
 
 #[derive(Parser, Debug)]
 #[command(name = "dagger", version = "0.0.1", about, long_about)]
@@ -72,7 +72,18 @@ pub struct GlobalOpts {
 // 主方法
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        None => {}
+        None => {
+            let cfg = provider::provider_from_env()?;
+            let provider = provider::build_provider(&cfg);
+            let registry = tools::ToolRegistry::new();
+            let mut agent = agent::Agent::new(
+                provider,
+                cfg.model.clone(),
+                "你是一个AI助手".into(),
+                registry,
+            );
+            ui::run_repl(&mut agent).await?;
+        }
         Some(Command::Run { prompt, resume: _ }) => {
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);

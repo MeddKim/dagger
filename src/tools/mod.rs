@@ -34,7 +34,7 @@ impl ToolRegistry {
     }
 
     /// 执行工具
-    pub async fn execute(&self, name: &str, args: &Value) -> Result<String> {
+    pub async fn execute(&self, name: &str, _: &Value) -> Result<String> {
         match name {
             "get_weather" => Ok(format!("天气晴，气温21度")),
             other => Ok(format!("错误：未知工具 {other}")),
