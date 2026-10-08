@@ -125,7 +125,7 @@ pub fn provider_from_env() -> Result<ProviderConfig> {
         .ok()
         .map(|s| ProviderKind::parse(&s))
         .transpose()?
-        .unwrap_or(ProviderKind::OpenAIChat);
+        .unwrap_or(ProviderKind::Anthropic);
 
     let (key_var, url_var, default_model) = match kind {
         ProviderKind::OpenAIChat | ProviderKind::OpenAIResponses => {

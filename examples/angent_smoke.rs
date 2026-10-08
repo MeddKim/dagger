@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n── 用户输入 ──");
     println!("北京今天天气怎么样？适合跑步吗？\n");
 
-    let answer = agent.run("北京今天天气怎么样？适合跑步吗？").await?;
+    let answer = agent.run("北京今天天气怎么样？适合跑步吗？", None).await?;
 
     // ④ 冒烟断言：拿到非空最终答案
     println!("── Agent 最终答案 ──");

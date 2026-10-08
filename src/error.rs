@@ -1,3 +1,4 @@
+use rustyline::error::ReadlineError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -25,6 +26,9 @@ pub enum DaggerError {
 
     #[error("超过最大步数")]
     MaxStepsExceeded(usize),
+
+    #[error("终端读取异常:{0}")]
+    Readline(#[from] ReadlineError),
 }
 
 pub type Result<T> = std::result::Result<T, DaggerError>;

@@ -320,6 +320,9 @@ impl AnthropicClient {
             stream: false,
         };
 
+        println!("{}", self.base_url);
+        println!("{}", self.api_key);
+
         tracing::debug!(baseUrl = self.base_url, "【Anthropic】发起模型请求。");
         tracing::debug!(
             request = serde_json::to_string(&body).unwrap_or_else(|e| format!("<序列化失败: {e}>")),
