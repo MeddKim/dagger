@@ -1,6 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 
-use crate::{agent, provider, tools, ui};
+use crate::{
+    agent::{self, prompt},
+    provider,
+    tools::{self, ToolContext},
+    ui,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "dagger", version = "0.0.1", about, long_about)]
@@ -73,27 +78,31 @@ pub struct GlobalOpts {
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         None => {
+            let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);
-            let registry = tools::ToolRegistry::new();
-            let mut agent = agent::Agent::new(
-                provider,
-                cfg.model.clone(),
-                "你是一个AI助手".into(),
-                registry,
-            );
+            let registry = tools::standard_registry();
+            //系统提示词
+            let system = prompt::build_system_prompt(&cwd, None);
+            // 工具上下文
+            let tool_context = ToolContext { cwd: cwd.clone() };
+            let mut agent =
+                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
             ui::run_repl(&mut agent).await?;
         }
         Some(Command::Run { prompt, resume: _ }) => {
+            let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);
-            let registry = tools::ToolRegistry::new();
-            let mut agent = agent::Agent::new(
-                provider,
-                cfg.model.clone(),
-                "你是一个AI助手".into(),
-                registry,
-            );
+            let registry = tools::standard_registry();
+
+            //系统提示词
+            let system = prompt::build_system_prompt(&cwd, None);
+            // 工具上下文
+            let tool_context = ToolContext { cwd: cwd.clone() };
+            let mut agent =
+                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
+
             let answer = agent.run(&prompt, None).await?;
             println!("{answer}");
         }

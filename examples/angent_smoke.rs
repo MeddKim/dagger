@@ -15,9 +15,9 @@
 //! 3. ReAct 循环能走完 Thought → Action → Observation → Answer 全程
 //! 4. 返回最终文本答案
 
-use dagger::agent::Agent;
-use dagger::provider::{build_provider, provider_from_env};
-use dagger::tools::ToolRegistry;
+use dagger::agent::{Agent, prompt};
+use dagger::provider;
+use dagger::tools::{self, ToolContext};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -29,25 +29,25 @@ async fn main() -> anyhow::Result<()> {
     // ① 组装 Provider：环境变量 → 配置 → Box<dyn Provider>
     //    provider_from_env 返回 Result<_, DaggerError>，
     //    DaggerError 实现了 std::error::Error，? 可自动转成 anyhow::Error
-    let cfg = provider_from_env()?;
-    let provider = build_provider(&cfg);
-    println!("provider: {}", provider.name());
-    println!("model: {}", cfg.model);
+
+    let cwd = std::env::current_dir()?;
+    let cfg = provider::provider_from_env()?;
+    let provider = provider::build_provider(&cfg);
+    let registry = tools::standard_registry();
+    //系统提示词
+    let system = prompt::build_system_prompt(&cwd, None);
+    // 工具上下文
+    let tool_context = ToolContext { cwd: cwd.clone() };
 
     // ② 构造 Agent（ToolRegistry 内置 get_weather 工具）
-    let mut agent = Agent::new(
-        provider,
-        cfg.model.clone(),
-        "你是一个AI助手".into(),
-        ToolRegistry::new(),
-    );
+    let mut agent = Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
 
     // ③ 提一个需要工具才能回答的问题，触发 ReAct 循环：
     //    模型应先发起 get_weather 工具调用，拿到结果后再组织最终答案
     println!("\n── 用户输入 ──");
-    println!("北京今天天气怎么样？适合跑步吗？\n");
+    println!("简单介绍一下你自己？\n");
 
-    let answer = agent.run("北京今天天气怎么样？适合跑步吗？", None).await?;
+    let answer = agent.run("简单介绍一下你自己？", None).await?;
 
     // ④ 冒烟断言：拿到非空最终答案
     println!("── Agent 最终答案 ──");
