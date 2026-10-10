@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{DaggerError, Result};
 use crate::llm::unified::{
@@ -52,6 +53,7 @@ pub struct Agent {
     messages: Vec<Message>,
     ctx: ToolContext,
     permissions: std::sync::Arc<PermissionManager>,
+    cancel: CancellationToken,
 }
 
 impl Agent {
@@ -73,7 +75,12 @@ impl Agent {
             permissions: std::sync::Arc::new(crate::tools::permission::PermissionManager::new(
                 true, false,
             )),
+            cancel: CancellationToken::new(),
         }
+    }
+
+    pub fn set_cancel_token(&mut self, token: CancellationToken) {
+        self.cancel = token
     }
 
     pub async fn run(
@@ -88,6 +95,11 @@ impl Agent {
 
         // 一轮交互过程 ReAct 直至有最终答案或超过最大步数
         for _ in 1..=self.max_steps {
+            // 检查用户是否终止操作
+            if self.cancel.is_cancelled() {
+                return Err(DaggerError::Cancelled);
+            }
+
             let request = UnifiedRequest {
                 model: self.model.clone(),
                 system: Some(self.system_prompt.clone()),
@@ -172,13 +184,20 @@ impl Agent {
 
         let mut final_resp: Option<UnifiedResponse> = None;
 
-        while let Some(item) = stream.next().await {
+        while let Some(item) = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => {
+                return Err(DaggerError::Cancelled);
+            }
+            item = stream.next() => item,
+        } {
             let ev = item?;
             if let StreamEvent::Done(resp) = &ev {
                 final_resp = Some((**resp).clone());
             }
             Self::emit(event_tx, AgentEvent::Stream(ev)).await;
         }
+
         final_resp.ok_or_else(|| DaggerError::Parse("响应流结束但未接收到 Done 事件".into()))
     }
 
@@ -190,6 +209,15 @@ impl Agent {
         let mut results = Vec::new();
 
         for (id, name, input) in calls {
+            //工具调用期间的检查取消，如取消，直接生成对应工具取消消息
+            if self.cancel.is_cancelled() {
+                results.push(Block::ToolResult {
+                    tool_use_id: id,
+                    content: "该工具调用未执行，用户取消本轮操作".into(),
+                    is_error: true,
+                });
+                continue;
+            }
             // 发送工具执行时间
             Self::emit(
                 event_tx,
@@ -206,11 +234,15 @@ impl Agent {
 
             match self.permissions.check(&name, read_only, &preview) {
                 Decision::Allow => {
-                    let (output, is_error) =
-                        match self.registry.execute(&name, &input, &self.ctx).await {
-                            Ok(out) => (out, false),
+                    let exec = self.registry.execute(&name, &input, &self.ctx);
+                    let (output, is_error) = tokio::select! {
+                        biased; // 优先检查取消分支
+                        _ = self.cancel.cancelled() => ("工具执行被用户取消".to_string(), true),
+                        out = exec => match out {
+                            Ok(o) => (o, false),
                             Err(e) => (format!("工具内部错误:{e}"), true),
-                        };
+                        },
+                    };
                     // 发送工具执行完成事件
                     Self::emit(
                         event_tx,

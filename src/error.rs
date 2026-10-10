@@ -29,6 +29,9 @@ pub enum DaggerError {
 
     #[error("终端读取异常:{0}")]
     Readline(#[from] ReadlineError),
+
+    #[error("操作已被用户取消")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, DaggerError>;

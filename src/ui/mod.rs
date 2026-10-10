@@ -1,7 +1,8 @@
-use crate::error::Result;
+use crate::error::{DaggerError, Result};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentEventTx};
 
@@ -81,12 +82,31 @@ async fn run_once(agent: &mut Agent, input: &str) -> Result<()> {
     //新启线程处理 agent事件
     let renderer = tokio::spawn(render::render_loop(rx));
 
+    //本轮取消令牌
+    let token = CancellationToken::new();
+    agent.set_cancel_token(token.clone());
+
+    //监听取消动作
+    let cancel_watcher = {
+        let token = token.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            token.cancel();
+        })
+    };
+
     let result = agent.run(input, Some(tx)).await;
 
+    // 本轮对话结束，停止监听
+    cancel_watcher.abort();
     let _ = renderer.await;
 
     match result {
         Ok(_) => Ok(()),
+        Err(DaggerError::Cancelled) => {
+            println!("\n 已取消 （对话历史已保留，可继续提问或修正方向）");
+            Ok(())
+        }
         Err(e) => Err(e),
     }
 }
