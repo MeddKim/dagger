@@ -1,9 +1,9 @@
 use crate::error::{DaggerError, Result};
-use crate::llm::sse;
 use crate::llm::unified::{
     Block, EventStream, Message, Role, StopReason, StreamEvent, ToolDef, UnifiedRequest,
     UnifiedResponse, Usage,
 };
+use crate::llm::{retry, sse};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -320,28 +320,30 @@ impl AnthropicClient {
             stream: false,
         };
 
-        println!("{}", self.base_url);
-        println!("{}", self.api_key);
-
         tracing::debug!(baseUrl = self.base_url, "【Anthropic】发起模型请求。");
         tracing::debug!(
             request = serde_json::to_string(&body).unwrap_or_else(|e| format!("<序列化失败: {e}>")),
             "【Anthropic】发起模型请求。"
         );
 
-        let resp = self
-            .http
-            .post(format!("{}/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = retry::with_retry("anthropic", || async {
+            let resp = self
+                .http
+                .post(format!("{}/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+                .send()
+                .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(self.api_error(resp).await);
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(self.api_error(resp).await);
+            }
+            Ok(resp)
+        })
+        .await?;
+
         let parsed: AnthropicResponse = resp.json().await?;
         tracing::debug!("【Anthropic】模型响应{:?}。", parsed);
 
@@ -469,19 +471,23 @@ impl AnthropicClient {
             stream: true,
         })?;
 
-        let resp = self
-            .http
-            .post(format!("{}/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = retry::with_retry("anthropic", || async {
+            let resp = self
+                .http
+                .post(format!("{}/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+                .send()
+                .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(self.api_error(resp).await);
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(self.api_error(resp).await);
+            }
+            Ok(resp)
+        })
+        .await?;
 
         let mut sse = Box::pin(sse::into_sse_stream(resp));
 

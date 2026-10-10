@@ -1,9 +1,9 @@
 use crate::error::{DaggerError, Result};
-use crate::llm::sse;
 use crate::llm::unified::{
     Block, EventStream, Message, Role, StopReason, StreamEvent, ToolDef, UnifiedRequest,
     UnifiedResponse, Usage,
 };
+use crate::llm::{retry, sse};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -340,18 +340,23 @@ impl OpenAIChatClient {
             request = serde_json::to_string(&body).unwrap_or_else(|e| format!("<序列化失败: {e}>")),
             "【OpenAIChat】发起模型请求。"
         );
-        let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(self.api_error(resp).await);
-        }
+        let resp = retry::with_retry("openai.chat.completions", || async {
+            let resp = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(self.api_error(resp).await);
+            }
+            Ok(resp)
+        })
+        .await?;
 
         let chat_resp: ChatResponse = resp.json().await?;
         tracing::debug!("【OpenAIChat】模型响应。response={:?}", chat_resp);
@@ -445,17 +450,21 @@ impl OpenAIChatClient {
         // Deepseek等三方厂商并不需要该参数，会直接返回usage，且属性有差异
         body["stream_options"] = json!({"include_usage": true});
 
-        let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = retry::with_retry("openai.chat.completions", || async {
+            let resp = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await?;
 
-        if !resp.status().is_success() {
-            return Err(self.api_error(resp).await);
-        }
+            if !resp.status().is_success() {
+                return Err(self.api_error(resp).await);
+            }
+            Ok(resp)
+        })
+        .await?;
 
         let mut sse = Box::pin(sse::into_sse_stream(resp));
 

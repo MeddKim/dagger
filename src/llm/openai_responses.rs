@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{DaggerError, Result};
-use crate::llm::sse;
 use crate::llm::unified::{
     Block, EventStream, Message, Role, StopReason, StreamEvent, ToolDef, UnifiedRequest,
     UnifiedResponse, Usage,
 };
+use crate::llm::{retry, sse};
 
 /// OpenAI Responses协议 请求结构体
 #[derive(Debug, Serialize)]
@@ -358,18 +358,22 @@ impl OpenAIResponsesClient {
             "【OpenAIResponses】发起模型请求。"
         );
 
-        let resp = self
-            .http
-            .post(format!("{}/responses", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = retry::with_retry("openai.responses", || async {
+            let resp = self
+                .http
+                .post(format!("{}/responses", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(self.api_error(resp).await);
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(self.api_error(resp).await);
+            }
+            Ok(resp)
+        })
+        .await?;
 
         let parsed: ResponsesResponse = resp.json().await?;
         from_responses_response(parsed)
@@ -444,18 +448,23 @@ impl OpenAIResponsesClient {
             store: false,
         };
 
-        let resp = self
-            .http
-            .post(format!("{}/responses", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = retry::with_retry("openai.completions", || async {
+            let resp = self
+                .http
+                .post(format!("{}/responses", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(self.api_error(resp).await);
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(self.api_error(resp).await);
+            }
+            Ok(resp)
+        })
+        .await?;
+
         let mut sse = Box::pin(sse::into_sse_stream(resp));
 
         let stream = async_stream::try_stream! {
