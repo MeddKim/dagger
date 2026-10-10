@@ -38,6 +38,10 @@ impl Tool for ReadFile {
         })
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let path = ctx.resolve(args["path"].as_str().unwrap_or_default());
         let content = match tokio::fs::read_to_string(&path).await {
@@ -179,6 +183,10 @@ impl Tool for Glob {
         })
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let pattern = args["pattern"].as_str().unwrap_or_default();
         let root = args["path"]
@@ -267,6 +275,10 @@ impl Tool for Grep {
             },
             "required": ["pattern"]
         })
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput> {

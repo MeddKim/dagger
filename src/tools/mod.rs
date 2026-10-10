@@ -81,6 +81,11 @@ pub trait Tool: Send + Sync {
             input_schema: self.schema(),
         }
     }
+
+    /// 当前工具是否只读工具，用于权限审批判定
+    fn is_read_only(&self) -> bool {
+        false
+    }
 }
 
 /// 工具输出
@@ -234,6 +239,8 @@ fn validate_args(schema: &Value, args: &Value) -> std::result::Result<(), String
     }
     Ok(())
 }
+
+pub mod permission;
 
 pub mod edit;
 pub mod fs;

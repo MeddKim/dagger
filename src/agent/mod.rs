@@ -5,6 +5,7 @@ use crate::error::{DaggerError, Result};
 use crate::llm::unified::{
     Block, EventStream, Role, StopReason, StreamEvent, UnifiedRequest, UnifiedResponse,
 };
+use crate::tools::permission::{Decision, PermissionManager};
 use crate::tools::{ToolContext, ToolRegistry};
 use crate::{llm::unified::Message, provider::Provider};
 
@@ -50,6 +51,7 @@ pub struct Agent {
     max_steps: usize,
     messages: Vec<Message>,
     ctx: ToolContext,
+    permissions: std::sync::Arc<PermissionManager>,
 }
 
 impl Agent {
@@ -68,6 +70,9 @@ impl Agent {
             max_steps: DEFAULT_MAX_STEPS,
             messages: vec![],
             ctx,
+            permissions: std::sync::Arc::new(crate::tools::permission::PermissionManager::new(
+                true, false,
+            )),
         }
     }
 
@@ -195,26 +200,43 @@ impl Agent {
             )
             .await;
 
-            let (output, is_error) = match self.registry.execute(&name, &input, &self.ctx).await {
-                Ok(out) => (out, false),
-                Err(e) => (format!("工具内部错误:{e}"), true),
-            };
+            let tool = self.registry.get(&name);
+            let read_only = tool.map(|t| t.is_read_only()).unwrap_or(false);
+            let preview = format!("{name}({})", summarize_input(&input));
 
-            // 发送工具执行完成事件
-            Self::emit(
-                event_tx,
-                AgentEvent::ToolFinished {
-                    name: name.clone(),
-                    output: output.clone(),
-                    is_error,
-                },
-            )
-            .await;
-            results.push(Block::ToolResult {
-                tool_use_id: id,
-                content: output,
-                is_error,
-            });
+            match self.permissions.check(&name, read_only, &preview) {
+                Decision::Allow => {
+                    let (output, is_error) =
+                        match self.registry.execute(&name, &input, &self.ctx).await {
+                            Ok(out) => (out, false),
+                            Err(e) => (format!("工具内部错误:{e}"), true),
+                        };
+                    // 发送工具执行完成事件
+                    Self::emit(
+                        event_tx,
+                        AgentEvent::ToolFinished {
+                            name: name.clone(),
+                            output: output.clone(),
+                            is_error,
+                        },
+                    )
+                    .await;
+                    results.push(Block::ToolResult {
+                        tool_use_id: id,
+                        content: output,
+                        is_error,
+                    });
+                }
+                Decision::Deny(reason) => {
+                    results.push(Block::ToolResult {
+                        tool_use_id: id,
+                        content: format!(
+                            "权限拒绝：{reason}。请换一种不需要该权限的方式继续，或向用户说明"
+                        ),
+                        is_error: true,
+                    });
+                }
+            }
         }
 
         self.messages.push(Message {
@@ -227,5 +249,21 @@ impl Agent {
         if let Some(tx) = tx {
             let _ = tx.send(ev).await;
         }
+    }
+}
+
+/// 把工具参数压缩成单行预览，提供给UI成授权时预览
+fn summarize_input(input: &serde_json::Value) -> String {
+    let s = serde_json::to_string(input).unwrap_or_default();
+    let max = 80;
+    if s.len() <= max {
+        s
+    } else {
+        let mut end = max;
+        //确保切割点为字符边界，避免切坏 UTF-8 字符
+        while !s.is_char_boundary(end) {
+            end = end - 1
+        }
+        format!("{}...", &s[..end])
     }
 }
