@@ -2,6 +2,7 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::context::{self, ContextBudget};
 use crate::error::{DaggerError, Result};
 use crate::llm::unified::{
     Block, EventStream, Role, StopReason, StreamEvent, UnifiedRequest, UnifiedResponse,
@@ -98,6 +99,12 @@ impl Agent {
             // 检查用户是否终止操作
             if self.cancel.is_cancelled() {
                 return Err(DaggerError::Cancelled);
+            }
+
+            let budget = ContextBudget::default();
+            if budget.exceeds(&self.messages) {
+                tracing::info!("上下文水位越线，紧急截断");
+                self.messages = context::truncate(&self.messages, budget.available_buget(), 12);
             }
 
             let request = UnifiedRequest {
