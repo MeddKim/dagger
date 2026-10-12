@@ -1,9 +1,9 @@
 use clap::{Args, Parser, Subcommand};
 
 use crate::{
-    agent::{self, prompt},
+    agent::{self, prompt, subagent},
     provider,
-    tools::{self, ToolContext},
+    tools::{self, ToolContext, permission::PermissionManager},
     ui,
 };
 
@@ -81,10 +81,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);
-            let registry = tools::standard_registry();
-
+            // 权限管理工具
+            let permissions =
+                std::sync::Arc::new(PermissionManager::new(atty_is_terminal(), false));
+            // 工具合集 + 子任务工具
+            let registry = tools::standard_registry()
+                .register(subagent::Task::new(cfg.clone(), permissions.clone()));
             // 工具上下文
             let tool_context = ToolContext { cwd: cwd.clone() };
+
             // 项目信息
             let project = crate::project::detect(&cwd);
             let project_section = crate::project::render_prompt_section(&project);
@@ -96,17 +101,23 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             );
 
             let mut agent =
-                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
+                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context)
+                    .with_permissions(permissions.clone());
             ui::run_repl(&mut agent).await?;
         }
         Some(Command::Run { prompt, resume }) => {
             let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);
-            let registry = tools::standard_registry();
-
+            // 权限管理工具
+            let permissions =
+                std::sync::Arc::new(PermissionManager::new(atty_is_terminal(), false));
+            // 工具合集 + 子任务工具
+            let registry = tools::standard_registry()
+                .register(subagent::Task::new(cfg.clone(), permissions.clone()));
             // 工具上下文
             let tool_context = ToolContext { cwd: cwd.clone() };
+
             // 项目信息
             let project = crate::project::detect(&cwd);
             let project_section = crate::project::render_prompt_section(&project);
@@ -118,7 +129,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             );
 
             let mut agent =
-                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
+                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context)
+                    .with_permissions(permissions.clone());
 
             //恢复历史消息
             let store = crate::session::SessionStore::default_location()?;
@@ -150,4 +162,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Config { action: _ }) => {}
     }
     Ok(())
+}
+
+fn atty_is_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }

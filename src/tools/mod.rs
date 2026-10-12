@@ -256,3 +256,10 @@ pub fn standard_registry() -> ToolRegistry {
         .register(edit::EditFile)
         .register(shell::Bash)
 }
+
+pub fn expore_registry() -> ToolRegistry {
+    ToolRegistry::new()
+        .register(fs::ReadFile)
+        .register(fs::Glob)
+        .register(fs::Grep)
+}

@@ -13,6 +13,7 @@ use crate::tools::{ToolContext, ToolRegistry};
 use crate::{llm::unified::Message, provider::Provider};
 
 pub mod prompt;
+pub mod subagent;
 
 /// 默认最大循环步数（安全阀）
 const DEFAULT_MAX_STEPS: usize = 32;
@@ -75,7 +76,7 @@ impl Agent {
             messages: vec![],
             ctx,
             permissions: std::sync::Arc::new(crate::tools::permission::PermissionManager::new(
-                true, false,
+                false, false,
             )),
             cancel: CancellationToken::new(),
         }
@@ -83,6 +84,19 @@ impl Agent {
 
     pub fn set_cancel_token(&mut self, token: CancellationToken) {
         self.cancel = token
+    }
+
+    pub fn with_max_steps(mut self, n: usize) -> Self {
+        self.max_steps = n;
+        self
+    }
+
+    pub fn with_permissions(
+        mut self,
+        permissions: std::sync::Arc<crate::tools::permission::PermissionManager>,
+    ) -> Self {
+        self.permissions = permissions;
+        self
     }
 
     ///设置历史消息 -> 一般用于恢复对话
