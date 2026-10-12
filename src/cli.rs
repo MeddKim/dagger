@@ -82,10 +82,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);
             let registry = tools::standard_registry();
-            //系统提示词
-            let system = prompt::build_system_prompt(&cwd, None);
+
             // 工具上下文
             let tool_context = ToolContext { cwd: cwd.clone() };
+            // 项目信息
+            let project = crate::project::detect(&cwd);
+            let project_section = crate::project::render_prompt_section(&project);
+            //系统提示词
+            let system = format!(
+                "{}\n\n---\n\n{}",
+                prompt::build_system_prompt(&cwd),
+                project_section
+            );
+
             let mut agent =
                 agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
             ui::run_repl(&mut agent).await?;
@@ -96,10 +105,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let provider = provider::build_provider(&cfg);
             let registry = tools::standard_registry();
 
-            //系统提示词
-            let system = prompt::build_system_prompt(&cwd, None);
             // 工具上下文
             let tool_context = ToolContext { cwd: cwd.clone() };
+            // 项目信息
+            let project = crate::project::detect(&cwd);
+            let project_section = crate::project::render_prompt_section(&project);
+            //系统提示词
+            let system = format!(
+                "{}\n\n---\n\n{}",
+                prompt::build_system_prompt(&cwd),
+                project_section
+            );
+
             let mut agent =
                 agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
 

@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let provider = provider::build_provider(&cfg);
     let registry = tools::standard_registry();
     //系统提示词
-    let system = prompt::build_system_prompt(&cwd, None);
+    let system = prompt::build_system_prompt(&cwd);
     // 工具上下文
     let tool_context = ToolContext { cwd: cwd.clone() };
 

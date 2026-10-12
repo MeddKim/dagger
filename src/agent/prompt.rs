@@ -66,21 +66,13 @@ fn environment_section(cwd: &Path) -> String {
 
 /// 构建完整提示词
 /// - cwd 当前工作目录
-/// - project_context: 项目级提示词（取 AGENTS.md）
-pub fn build_system_prompt(cwd: &Path, project_context: Option<&str>) -> String {
-    let mut parts = vec![
+pub fn build_system_prompt(cwd: &Path) -> String {
+    let parts = vec![
         IDENTITY.to_string(),
         environment_section(cwd),
         TOOL_DISCIPLINE.to_string(),
         STYLE.to_string(),
         SAFETY.to_string(),
     ];
-
-    if let Some(ctx) = project_context {
-        parts.push(format!(
-            "项目规范（用户项目根目录的 AGENTS.md 内容，必须遵守）：\n{ctx}"
-        ));
-    }
-
     parts.join("\n\n---\n\n")
 }

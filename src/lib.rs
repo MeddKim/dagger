@@ -3,6 +3,7 @@ pub mod cli;
 pub mod context;
 pub mod error;
 pub mod llm;
+pub mod project;
 pub mod provider;
 pub mod session;
 pub mod tools;
