@@ -1,8 +1,11 @@
+use std::ptr::read;
+
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::context::{self, ContextBudget};
+use crate::context::compact::compact;
+use crate::context::{self, ContextBudget, tokens};
 use crate::error::{DaggerError, Result};
 use crate::llm::unified::{
     Block, EventStream, Role, StopReason, StreamEvent, UnifiedRequest, UnifiedResponse,
@@ -103,8 +106,20 @@ impl Agent {
 
             let budget = ContextBudget::default();
             if budget.exceeds(&self.messages) {
-                tracing::info!("上下文水位越线，紧急截断");
-                self.messages = context::truncate(&self.messages, budget.available_buget(), 12);
+                tracing::info!("上下文水位越线，尝试使用压缩");
+                match compact(self.provider.as_ref(), &self.model, &self.messages, 12).await {
+                    Ok(rebuilt) => {
+                        let before = tokens::count_messages(&self.messages);
+                        let after = tokens::count_messages(&rebuilt);
+                        tracing::info!(before = before, after = after, "压缩完成");
+                        self.messages = rebuilt;
+                    }
+                    Err(e) => {
+                        tracing::info!("压缩失败（{e}），使用兜底截断");
+                        self.messages =
+                            context::truncate(&self.messages, budget.available_buget(), 12);
+                    }
+                }
             }
 
             let request = UnifiedRequest {

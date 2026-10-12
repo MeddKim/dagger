@@ -1,5 +1,6 @@
 use crate::llm::unified::{Block, Message, Role};
 
+pub mod compact;
 pub mod tokens;
 
 ///上下文预算配置
