@@ -1,5 +1,3 @@
-use std::ptr::read;
-
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -85,6 +83,16 @@ impl Agent {
 
     pub fn set_cancel_token(&mut self, token: CancellationToken) {
         self.cancel = token
+    }
+
+    ///设置历史消息 -> 一般用于恢复对话
+    pub fn set_messages(&mut self, history: Vec<Message>) {
+        self.messages = history
+    }
+
+    ///返回全部历史消息
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
     }
 
     pub async fn run(

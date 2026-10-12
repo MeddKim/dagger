@@ -90,7 +90,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
             ui::run_repl(&mut agent).await?;
         }
-        Some(Command::Run { prompt, resume: _ }) => {
+        Some(Command::Run { prompt, resume }) => {
             let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
             let provider = provider::build_provider(&cfg);
@@ -103,10 +103,34 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let mut agent =
                 agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
 
+            //恢复历史消息
+            let store = crate::session::SessionStore::default_location()?;
+            let session_id = if let Some(id) = resume {
+                let history = store.load(&id)?;
+                agent.set_messages(history);
+                id.clone()
+            } else {
+                store.create(&cfg.kind_name(), &cfg.model, &cwd)?
+            };
             let answer = agent.run(&prompt, None).await?;
+            // 采用全量添加的方式重新保存message
+            for m in agent.messages() {
+                store.append_message(&session_id, m)?;
+            }
             println!("{answer}");
         }
-        Some(Command::Sesssions) => {}
+        Some(Command::Sesssions) => {
+            let store = crate::session::SessionStore::default_location()?;
+            for s in store.list()? {
+                println!(
+                    "{} {:<20} {:<10} {}",
+                    s.created_at.format("%m-%d %H%:%M"),
+                    s.id,
+                    s.model,
+                    s.cwd
+                )
+            }
+        }
         Some(Command::Config { action: _ }) => {}
     }
     Ok(())

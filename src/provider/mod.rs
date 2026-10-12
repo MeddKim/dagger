@@ -95,6 +95,12 @@ pub struct ProviderConfig {
     pub model: String,
 }
 
+impl ProviderConfig {
+    pub fn kind_name(&self) -> &'static str {
+        self.kind.as_str()
+    }
+}
+
 /// 根据配置，构建对应的Provider
 pub fn build_provider(cfg: &ProviderConfig) -> Box<dyn Provider> {
     match cfg.kind {

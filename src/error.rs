@@ -32,6 +32,9 @@ pub enum DaggerError {
 
     #[error("操作已被用户取消")]
     Cancelled,
+
+    #[error("IO错误：{0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, DaggerError>;
