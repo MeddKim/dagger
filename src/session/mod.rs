@@ -77,6 +77,25 @@ impl SessionStore {
         Ok(())
     }
 
+    ///重新写入
+    pub fn rewrite_messages(&self, id: &str, messages: &[Message]) -> Result<()> {
+        let path = self.file(id);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|_| DaggerError::Config(format!("会话 {id} 不存在")))?;
+        let meta_line = text.lines().next().unwrap_or_default();
+
+        let mut buf = String::with_capacity(text.len());
+        buf.push_str(meta_line);
+        buf.push('\n');
+        for m in messages {
+            let line = serde_json::to_string(&SessionRecord::Message { message: m.clone() })?;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        fs::write(&path, buf)?;
+        Ok(())
+    }
+
     /// 加载会话文件恢复会话
     pub fn load(&self, id: &str) -> Result<Vec<Message>> {
         let text = std::fs::read_to_string(self.file(id))

@@ -114,9 +114,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             };
             let answer = agent.run(&prompt, None).await?;
             // 采用全量添加的方式重新保存message
-            for m in agent.messages() {
-                store.append_message(&session_id, m)?;
-            }
+            store.rewrite_messages(&session_id, &agent.messages())?;
+
             println!("{answer}");
         }
         Some(Command::Sesssions) => {
