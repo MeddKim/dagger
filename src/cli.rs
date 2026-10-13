@@ -80,7 +80,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         None => {
             let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
-            let provider = provider::build_provider(&cfg);
             // 权限管理工具
             let permissions =
                 std::sync::Arc::new(PermissionManager::new(atty_is_terminal(), false));
@@ -100,15 +99,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 project_section
             );
 
-            let mut agent =
-                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context)
-                    .with_permissions(permissions.clone());
+            let mut agent = agent::Agent::new(&cfg, system, registry, tool_context)
+                .with_permissions(permissions.clone());
             ui::run_repl(&mut agent).await?;
         }
         Some(Command::Run { prompt, resume }) => {
             let cwd = std::env::current_dir()?;
             let cfg = provider::provider_from_env()?;
-            let provider = provider::build_provider(&cfg);
             // 权限管理工具
             let permissions =
                 std::sync::Arc::new(PermissionManager::new(atty_is_terminal(), false));
@@ -128,9 +125,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 project_section
             );
 
-            let mut agent =
-                agent::Agent::new(provider, cfg.model.clone(), system, registry, tool_context)
-                    .with_permissions(permissions.clone());
+            let mut agent = agent::Agent::new(&cfg, system, registry, tool_context)
+                .with_permissions(permissions.clone());
 
             //恢复历史消息
             let store = crate::session::SessionStore::default_location()?;
@@ -139,7 +135,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 agent.set_messages(history);
                 id.clone()
             } else {
-                store.create(&cfg.kind_name(), &cfg.model, &cwd)?
+                store.create(cfg.kind_name(), &cfg.model, &cwd)?
             };
             let answer = agent.run(&prompt, None).await?;
             // 采用全量添加的方式重新保存message

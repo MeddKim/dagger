@@ -246,7 +246,7 @@ pub mod edit;
 pub mod fs;
 pub mod shell;
 
-/// 初始化所有工具
+/// 通用工具
 pub fn standard_registry() -> ToolRegistry {
     ToolRegistry::new()
         .register(fs::ReadFile)
@@ -257,6 +257,7 @@ pub fn standard_registry() -> ToolRegistry {
         .register(shell::Bash)
 }
 
+/// 初始化浏览工具
 pub fn expore_registry() -> ToolRegistry {
     ToolRegistry::new()
         .register(fs::ReadFile)

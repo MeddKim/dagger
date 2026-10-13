@@ -8,10 +8,12 @@ use crate::error::{DaggerError, Result};
 use crate::llm::unified::{
     Block, EventStream, Role, StopReason, StreamEvent, UnifiedRequest, UnifiedResponse,
 };
+use crate::provider::{self, ProviderConfig};
 use crate::tools::permission::{Decision, PermissionManager};
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{self, ToolContext, ToolRegistry};
 use crate::{llm::unified::Message, provider::Provider};
 
+pub mod plan;
 pub mod prompt;
 pub mod subagent;
 
@@ -48,6 +50,7 @@ pub type AgentEventTx = mpsc::Sender<AgentEvent>;
 pub type AgentEventRx = mpsc::Receiver<AgentEvent>;
 
 pub struct Agent {
+    provider_cfg: ProviderConfig,
     provider: Box<dyn Provider>,
     model: String,
     system_prompt: String,
@@ -61,15 +64,15 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(
-        provider: Box<dyn Provider>,
-        model: String,
+        cfg: &ProviderConfig,
         system_prompt: String,
         registry: ToolRegistry,
         ctx: ToolContext,
     ) -> Self {
         Self {
-            provider,
-            model,
+            provider_cfg: cfg.clone(),
+            provider: provider::build_provider(&cfg),
+            model: cfg.model.clone(),
             system_prompt,
             registry,
             max_steps: DEFAULT_MAX_STEPS,
@@ -82,8 +85,32 @@ impl Agent {
         }
     }
 
+    // fn with_tool_registry(mut self, registry: ToolRegistry) -> Self {
+    //     self.registry = registry;
+    //     self
+    // }
+    /// 初始化全量工具
+    pub fn switch_full_registry(&mut self) {
+        self.registry = tools::standard_registry().register(subagent::Task::new(
+            self.provider_cfg.clone(),
+            self.permissions.clone(),
+        ));
+    }
+
     pub fn set_cancel_token(&mut self, token: CancellationToken) {
         self.cancel = token
+    }
+
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = prompt;
+    }
+
+    pub fn set_tool_registry(&mut self, registry: ToolRegistry) {
+        self.registry = registry;
+    }
+
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
     }
 
     pub fn with_max_steps(mut self, n: usize) -> Self {

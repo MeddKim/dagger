@@ -32,7 +32,6 @@ async fn main() -> anyhow::Result<()> {
 
     let cwd = std::env::current_dir()?;
     let cfg = provider::provider_from_env()?;
-    let provider = provider::build_provider(&cfg);
     let registry = tools::standard_registry();
     //系统提示词
     let system = prompt::build_system_prompt(&cwd);
@@ -40,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let tool_context = ToolContext { cwd: cwd.clone() };
 
     // ② 构造 Agent（ToolRegistry 内置 get_weather 工具）
-    let mut agent = Agent::new(provider, cfg.model.clone(), system, registry, tool_context);
+    let mut agent = Agent::new(&cfg, system, registry, tool_context);
 
     // ③ 提一个需要工具才能回答的问题，触发 ReAct 循环：
     //    模型应先发起 get_weather 工具调用，拿到结果后再组织最终答案

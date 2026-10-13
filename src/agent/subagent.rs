@@ -1,7 +1,7 @@
 use crate::{
     agent::Agent,
     error::{DaggerError, Result},
-    provider::{ProviderConfig, build_provider},
+    provider::ProviderConfig,
     tools::{self, Tool, ToolContext, ToolOutput, ToolRegistry, permission::PermissionManager},
 };
 use async_trait::async_trait;
@@ -144,10 +144,8 @@ impl Tool for Task {
 
         tracing::info!(agent_type = kind.name(), %description, "子agent启动");
 
-        let provider = build_provider(&self.provider_cfg);
         let mut child = Agent::new(
-            provider,
-            self.provider_cfg.model.clone(),
+            &self.provider_cfg,
             kind.system_prompt(),
             kind.registry(),
             ctx.clone(),
