@@ -2,10 +2,10 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{
     agent::{self, prompt, subagent},
-    provider,
     tools::{self, ToolContext, permission::PermissionManager},
     ui,
 };
+use std::io::BufRead;
 
 #[derive(Parser, Debug)]
 #[command(name = "dagger", version = "0.0.1", about, long_about)]
@@ -40,7 +40,7 @@ pub enum ConfigAction {
         /// 目标 provider：openai-chat / openai-responses / anthropic
         #[arg(long, default_value = "openai-chat")]
         provider: String,
-        /// API Key；省略则安全地交互输入（不回显交给 rpassword，练习）
+        /// API Key；省略则安全地交互输入
         key: Option<String>,
     },
     /// 从钥匙串删除指定 provider 的 API Key
@@ -79,7 +79,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         None => {
             let cwd = std::env::current_dir()?;
-            let cfg = provider::provider_from_env()?;
+            // 读取配置
+            let project_root = crate::project::find_root(&cwd);
+            let cfg =
+                crate::config::Config::load(&project_root, &cli.global)?.to_provider_config()?;
             // 权限管理工具
             let permissions =
                 std::sync::Arc::new(PermissionManager::new(atty_is_terminal(), false));
@@ -105,7 +108,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Command::Run { prompt, resume }) => {
             let cwd = std::env::current_dir()?;
-            let cfg = provider::provider_from_env()?;
+            // 读取配置
+            let project_root = crate::project::find_root(&cwd);
+            let cfg =
+                crate::config::Config::load(&project_root, &cli.global)?.to_provider_config()?;
             // 权限管理工具
             let permissions =
                 std::sync::Arc::new(PermissionManager::new(atty_is_terminal(), false));
@@ -155,7 +161,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 )
             }
         }
-        Some(Command::Config { action: _ }) => {}
+        Some(Command::Config { action }) => match action {
+            ConfigAction::Show => {
+                let root = crate::project::find_root(&std::env::current_dir()?);
+                let cfg = crate::config::Config::load(&root, &cli.global)?;
+                println!("{}", cfg.render());
+            }
+            ConfigAction::SetKey { provider, key } => {
+                let key = match key {
+                    Some(k) => k,
+                    None => {
+                        // 简化：直接读一行；生产用 rpassword 关闭回显（练习）
+                        eprint!("请输入 {provider} 的 API Key: ");
+                        let mut buf = String::new();
+                        std::io::stdin().lock().read_line(&mut buf)?;
+                        buf.trim().to_string()
+                    }
+                };
+                crate::config::keychain_set(&provider, &key)?;
+                println!("已存入钥匙串（条目：{provider}）");
+            }
+            ConfigAction::DeleteKey { provider } => {
+                crate::config::keychain_delete(&provider)?;
+                println!("已从钥匙串删除（条目：{provider}）");
+            }
+        },
     }
     Ok(())
 }

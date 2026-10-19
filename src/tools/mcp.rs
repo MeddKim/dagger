@@ -317,7 +317,7 @@ impl Tool for McpTool {
         self.schema.clone()
     }
 
-    // 远端工具副作用未知 → 一律视为非只读，走权限审批（第 15 章）
+    // 远端工具副作用未知 → 一律视为非只读，走权限审批
     fn is_read_only(&self) -> bool {
         false
     }

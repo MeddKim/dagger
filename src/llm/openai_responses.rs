@@ -517,7 +517,6 @@ impl OpenAIResponsesClient {
                     }
 
                     ResponsesStreamEvent::Completed { response } => {
-                        // 复用第 06 章的完整解析：最终状态以它为准
                         let unified = from_responses_response(response)?;
                         yield StreamEvent::Done(Box::new(unified));
                         break;

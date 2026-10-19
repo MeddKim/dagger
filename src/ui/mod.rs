@@ -73,7 +73,8 @@ pub async fn run_repl(agent: &mut Agent) -> Result<()> {
                 }
             }
             Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
-                println!("\n 再见")
+                println!("\n 再见");
+                break;
             }
             Err(e) => return Err(e.into()),
         }

@@ -120,7 +120,7 @@ impl Tool for WriteFile {
         let path = ctx.resolve(args["path"].as_str().unwrap_or_default());
         let content = args["content"].as_str().unwrap_or_default();
 
-        // 越界检查：防止 ../../ 逃逸工作区（第 15 章权限模型的路径级实现）
+        // 越界检查：防止 ../../ 逃逸工作区
         if !ctx.is_inside_workspace(&path) {
             return Ok(ToolOutput::text(format!(
                 "拒绝写入：{} 不在工作目录 {} 内",
