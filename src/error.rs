@@ -35,6 +35,9 @@ pub enum DaggerError {
 
     #[error("IO错误：{0}")]
     Io(#[from] std::io::Error),
+
+    #[error("MCP错误：{0}")]
+    Mcp(String),
 }
 
 pub type Result<T> = std::result::Result<T, DaggerError>;

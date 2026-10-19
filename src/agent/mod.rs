@@ -89,8 +89,8 @@ impl Agent {
     //     self.registry = registry;
     //     self
     // }
-    /// 初始化全量工具
-    pub fn switch_full_registry(&mut self) {
+    /// 初始化 / 重置 全量工具
+    pub fn reset_tool_registry(&mut self) {
         self.registry = tools::standard_registry().register(subagent::Task::new(
             self.provider_cfg.clone(),
             self.permissions.clone(),

@@ -38,7 +38,7 @@ pub async fn run_repl(agent: &mut Agent) -> Result<()> {
                                 );
                             } else {
                                 //退出计划模式，切换会原来工具集 / 系统提示词
-                                agent.switch_full_registry();
+                                agent.reset_tool_registry();
                                 agent.set_system_prompt(default_prompt.clone());
                                 plan_mode = false;
                                 println!("已放弃该计划，退出计划模式。");
@@ -52,7 +52,7 @@ pub async fn run_repl(agent: &mut Agent) -> Result<()> {
                     match run_plan_turn(agent, input, &default_prompt).await {
                         PlanTurnResult::Approved(plan_text) => {
                             agent.set_system_prompt(default_prompt.clone());
-                            agent.switch_full_registry();
+                            agent.reset_tool_registry();
                             plan_mode = false;
                             let kickoff =
                                 format!("计划已获用户批准，请严格按计划执行：\n\n{plan_text}");
@@ -61,7 +61,7 @@ pub async fn run_repl(agent: &mut Agent) -> Result<()> {
                             }
                         }
                         PlanTurnResult::Rejected => {
-                            agent.switch_full_registry();
+                            agent.reset_tool_registry();
                             agent.set_system_prompt(default_prompt.clone());
                             plan_mode = false;
                             println!("已放弃该计划，退出计划模式");

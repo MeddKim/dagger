@@ -8,6 +8,8 @@ use crate::{error::Result, llm::unified::ToolDef};
 use async_trait::async_trait;
 use serde_json::Value;
 
+pub mod mcp;
+
 #[derive(Default)]
 pub struct ToolRegistry {
     // 工具合集
