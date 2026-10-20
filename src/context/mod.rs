@@ -1,8 +1,8 @@
 use crate::llm::unified::{Block, Message, Role};
 
 pub mod compact;
+pub mod observability;
 pub mod tokens;
-
 ///上下文预算配置
 #[derive(Debug, Clone)]
 pub struct ContextBudget {

@@ -135,12 +135,12 @@ pub fn provider_from_env() -> Result<ProviderConfig> {
 
     let (key_var, url_var, default_model) = match kind {
         ProviderKind::OpenAIChat | ProviderKind::OpenAIResponses => {
-            ("OPENAI_API_KEY", "OPENAI_BASE_URL", "deepseek-v4-flash")
+            ("OPENAI_API_KEY", "OPENAI_BASE_URL", "deepseek-v4.1-flash")
         }
         ProviderKind::Anthropic => (
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
-            "deepseek-v4-flash",
+            "deepseek-v4.1-flash",
         ),
     };
 

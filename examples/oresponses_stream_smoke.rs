@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let request = UnifiedRequest {
-        model: "deepseek-flash".into(),
+        model: "deepseek-v4.1-flash".into(),
         system: Some("你是一个AI助手".into()),
         tools: vec![],
         temperature: Some(0.7),

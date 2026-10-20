@@ -60,6 +60,7 @@ pub struct Agent {
     ctx: ToolContext,
     permissions: std::sync::Arc<PermissionManager>,
     cancel: CancellationToken,
+    stats: std::sync::Arc<crate::context::observability::AgentStats>,
 }
 
 impl Agent {
@@ -82,13 +83,13 @@ impl Agent {
                 false, false,
             )),
             cancel: CancellationToken::new(),
+            stats: std::sync::Arc::new(crate::context::observability::AgentStats::new()),
         }
     }
 
-    // fn with_tool_registry(mut self, registry: ToolRegistry) -> Self {
-    //     self.registry = registry;
-    //     self
-    // }
+    pub fn stats(&self) -> &crate::context::observability::AgentStats {
+        &self.stats
+    }
     /// 初始化 / 重置 全量工具
     pub fn reset_tool_registry(&mut self) {
         self.registry = tools::standard_registry().register(subagent::Task::new(
@@ -181,15 +182,20 @@ impl Agent {
                 thinking: false,
             };
 
+            let start = std::time::Instant::now();
             //Thought: 请求模型： 发起 Thought 过程
             let resp = match self.stream_once(&request, event_tx.as_ref()).await {
-                Ok(response) => response,
+                Ok(response) => {
+                    self.stats
+                        .record_call(&self.model, &response.usage, start.elapsed());
+                    response
+                }
                 Err(e) => {
                     self.messages.push(Message {
                         role: Role::Tool,
                         content: vec![Block::ToolResult {
                             tool_use_id: "llm_error".into(),
-                            content: format!(""),
+                            content: format!("上一次模型请求因网络问题失败（{e}）。请直接给出当前能做的回答，或换个方式继续"),
                             is_error: true,
                         }],
                     });
@@ -305,6 +311,7 @@ impl Agent {
 
             match self.permissions.check(&name, read_only, &preview) {
                 Decision::Allow => {
+                    let start = std::time::Instant::now();
                     let exec = self.registry.execute(&name, &input, &self.ctx);
                     let (output, is_error) = tokio::select! {
                         biased; // 优先检查取消分支
@@ -314,6 +321,8 @@ impl Agent {
                             Err(e) => (format!("工具内部错误:{e}"), true),
                         },
                     };
+                    // 无论成功、失败还是取消，都计入耗时
+                    self.stats.record_tool(&name, start.elapsed());
                     // 发送工具执行完成事件
                     Self::emit(
                         event_tx,

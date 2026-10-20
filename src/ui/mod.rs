@@ -91,7 +91,7 @@ enum CommandResult {
     TogglePlan,
 }
 
-fn handle_command(input: &str, _: &mut Agent) -> CommandResult {
+fn handle_command(input: &str, agent: &mut Agent) -> CommandResult {
     let mut parts = input.splitn(2, ' ');
     let cmd = parts.next().unwrap_or("");
     // let arg = parts.next().unwrap_or("").trim();
@@ -118,6 +118,9 @@ fn handle_command(input: &str, _: &mut Agent) -> CommandResult {
         }
         "/plan" => {
             return CommandResult::TogglePlan;
+        }
+        "/cost" => {
+            println!("{}", agent.stats().render());
         }
         other => println!("未知命令 {other} , 可输入 /help 查看可用命令"),
     }

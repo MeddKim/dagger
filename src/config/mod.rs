@@ -151,6 +151,11 @@ impl Config {
         base_url.override_opt(cli.base_url.clone(), Source::Cli);
         api_key.override_opt(cli.api_key.clone(), Source::Cli);
 
+        println!(
+            "当前provider: {:?}, base_url: {:?}, model: {:?}, api_key: {:?}",
+            provider, base_url, model, api_key
+        );
+
         Ok(Self {
             provider,
             model,
